@@ -1,0 +1,1494 @@
+Political Giving Analysis of Virginia's Personal Contributions 
+by Romulo Cabeza
+Date: May 23, 2015
+========================================================
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+# Load all of the packages that you end up using
+# in your analysis in this code chunk.
+
+#to access data go to http://www.fec.gov/disclosurep/pnational.do
+#then click on the 2012 election cycle, and then 'Export Contributor Data'
+#the link in the udacity data sources will go to the 2016 election cycle.
+
+
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(gridExtra)
+library(scales)
+library(maptools)
+library(choroplethr)
+library(choroplethrMaps)
+library(gtable)
+```
+
+```{r echo=FALSE, Load_the_Data}
+
+#virginia came with an extra space on the column to the right of the 
+#final colum
+#manually deleted that any contens from those columns in excel
+
+
+zip_city_match <- read.csv('zip_code_database.csv') #downloaded 
+#from: http://www.unitedstateszipcodes.org/zip-code-database/
+zip_city_match <- subset(zip_city_match, state == "VA")
+data(county.regions)#loading the FIPS of virginia
+virginia_chlor <- subset(county.regions, state.name == "virginia")
+
+state_dataset <- read.csv('virginia_contributions.csv', row.names = NULL) 
+
+data_set_name <- "va_contributions" 
+
+assign(data_set_name, state_dataset) 
+#future user can use this to generalize the whole process for other states
+#I started in that direction but will continue later
+rm(state_dataset)
+
+#label parties dems/republicans/independent
+
+#who were the candidates?
+names(va_contributions)
+unique(va_contributions$cand_nm)
+
+#what was their party...no party variable, so I create a function to label 
+#candidates as Republican, Democrat, or Third Party.
+str(va_contributions)
+```
+
+### What is the structure of your dataset?
+
+The data is a database of donations, transfer and refunds of funds to 
+presidential candidates in the 2012 election. It is organized by date and 
+donations given to candidates in the  primary (for all Republicans) and 
+general election (for the eventual Republican nominee, Mitt Romney and 
+Democratic incumbent Barack Obama). There is geographic information (zip 
+code, city), but it is not organized in an organized manner. The size of 
+donations are nearly all between 0-2500.
+
+There were 52,115 individuals and 14 candidates. Of the the 52,115 there were
+some duplications due to transactions that were transfers and necessitated 
+another receipt, or refunds that necessitated another receipt.
+
+There is no easily identifiale party label (Dems vs. Reps.)
+
+The major variables
+
+contbr_receipt_amt: donation size
+contbr_receipt_dt: when a donation was made
+cand_nm: candidate
+
+
+### What is/are the main feature(s) of interest in your dataset?
+
+I want to see if the giving rates (amounts, sizes) conform to conventional 
+political wisdom. So, I want to know about the size of the donations, how
+many, and during what stage of the election cycle.
+
+
+The data has personal information for individual givers including employer, 
+profession, location. 
+
+
+Important variables to be discussed:
+-size of the political donations
+-dates of giving
+-Profession of giver
+-number of personal donations to a given candidate
+-
+
+I'm most also interested in the giving rates by people that have a chosen
+profession. This insiht could be used to understand how subsets of the
+population reacted to certain campaign rhetoric, during the 2012 campaign. For
+instance, did a negative ad in June of 2012 cause a particular inflection point
+in the personal giving rates of certain types of individuals that deviates
+significantly from the overall personal contribution patterns?
+
+### New Variables That were necessary for the analysis
+
+1) party labels: I created a party function to identify the party of the 
+candidates and label them appropriately.
+
+2) running total: I created a running_count variable for each candidate 
+based on the amount given per day. This came as a result of some preliminary
+analysis  (ommitted for brevity), which showed the tracking the number of 
+contributions by scatter plot is not tenable. It is easy to overplot. Because
+so many of the data points are clustered in a few bands (100, 250, 1000, etc.),
+its not easy to compare where candidates are when you facet_wrap.
+
+
+
+3) zip code/county: I created a five-digit zip code in order to start to 
+consolidate all of the expanded zip codes (9 digit) and mispelled towns. 
+If you look for unique contributor cities, there are 964. A quick google 
+search finds that there are 38 cities and 191 towns in virginia. Glancing 
+at the data there are a lot of mispelled city names and abbreviations. Its a 
+nightmare. So I created a five digit zip code variable from the nine-digit 
+mailing zip code, and then I use a zip code database to match the five digit 
+zip codes to the respective counties.
+
+In order to obtain the zip code I downloaded a zip code database from:
+http://www.unitedstateszipcodes.org/zip-code-database/
+
+4) I had to format the date variable.
+
+
+5) PIFS Code: For Visualizing the data I needed to match the county to
+specific PIFS codes and data. This involved some data wrangling.
+
+see more:
+http://en.wikipedia.org/wiki/FIPS_county_code
+
+
+### Of the features you investigated, were there any unusual distributions? 
+###Did you perform any operations on the data to tidy, adjust, or 
+###change the form of the data? If so, why did you do this?
+
+I saw that there was some negative contributions. I investigated those a 
+bit and fund that the data set has some folks that only got their money back.
+Its a small enough number that it won't impact the overall findings. I was able
+to account for the information and document it.
+
+I was able to get around the mispelling of cities but some individuals were 
+inevitably counted twice because of mispellings. I can't control for that.
+There is some built in human error in the data set.
+
+```{r echo=FALSE, creating_variables_formatting}
+
+rep_dem_ind <- function(x){
+  if(x == "Obama, Barack"){
+    return("Democrat")
+  }else if(x == "Johnson, Gary Earl" | x == "Stein, Jill"){
+    return("Third Party")
+  }else{
+    return("Republican")
+  }
+}
+
+#city names can be variable (Virginia Beach, vs. V. Beach, and other 
+#abreviations)...will use five-digit zips and then match
+#to primary town name from a zip code database
+va_contributions$contbr_zip <- as.character(va_contributions$contbr_zip)
+
+
+zip_code_extract <- function(x){
+   return (as.integer(strtrim(x,5)))
+}
+
+
+#I will aggregate based on five-digit zipcode
+#and then use zip code database to match the larges contributions. 
+
+#create a party variable using sapply (loops though all candidnate names
+#runs the test in the function
+#rep_dem_ind)
+va_contributions$party <- as.factor(sapply(va_contributions$cand_nm, 
+                                           rep_dem_ind))
+
+va_contributions$zip <- sapply(va_contributions$contbr_zip, 
+                                     zip_code_extract)
+#va_contributions$city <- sapply(va_contributions$zip, final_city)
+#dates are factors, so we change them to dates 
+va_contributions$contb_receipt_dt <- as.Date(va_contributions$contb_receipt_dt, 
+                                             format = "%d-%b-%y")
+
+#adding the county and standardizing the primary_city based on 
+#the five digit zip code
+
+va_contributions <- inner_join(va_contributions, zip_city_match, by = 'zip')
+
+va_contributions <- va_contributions[,c(1:20,22,26,34)]
+
+
+```
+
+
+##Understanding Overall Distribution of giving by candidates,
+##and phases of the election, and number of total contributors
+
+```{r echo=FALSE, general_election}
+#i saw that are other types of  political givinggiving. 
+#I want to check if they are significatn
+#check the number of contributions and primary and general 
+#election were nearly all.proof
+mean(va_contributions$election_tp == 'P2012') 
+mean(va_contributions$election_tp == 'G2012') #54.3%
+
+```
+So 45.6% of the contributions were given in the primary,and
+54.3% were given in the general election. Its important to note,
+that the primary election funds can also be transferred to other
+state candidates, the candidate who won the Rep. (e.g. Romney)
+primary, paying back debt, etc. 
+
+But the point is that other, types of giving elections, can be eliminated
+from future discussion.
+
+###How much was given overall?
+
+
+```{r echo=FALSE, total_gen_primary}
+#primary election total spent:
+total_primary <- sum(subset(va_contributions,
+                            election_tp == 'P2012')$contb_receipt_amt) 
+#...$18.1 million
+
+#general election total spent:
+total_general <- sum(subset(va_contributions,
+                            election_tp == 'G2012')$contb_receipt_amt) 
+#...$16.7 million
+
+
+
+percent_total_primary  <- total_primary/(total_general+total_primary)
+percent_total_primary #52%
+
+percent_total_general <- total_general/(total_general+total_primary)
+percent_total_general #48%
+```
+$18.1 (52%) million was given in Primaries and $16.7 (48%) million was
+given during the general election
+
+
+###Initial observations: 
+The Primary had higher value of total personal  contributions than to 
+the general election , but there were more individuals contributions to 
+the general than to the primaries, indicating a a higer higher 
+participation. A lot of primary donations are transferable, to the
+general election but it was also used by Republicans to combat one another.
+
+###Number of people who contributed and the candidates
+```{r echo=FALSE, cands_contributors}
+
+length(unique(va_contributions$contbr_nm))
+
+unique(va_contributions$cand_nm)
+```
+
+
+
+###But there is an interesting hiccup..
+When we lookat at the amount given under general and primary it is greater than
+one and divide by the total amount we find that it is greater than one?
+```{r echo=FALSE, percent_given}
+
+
+#what percent of the total contributions were general and primary?
+
+gen_prim <- sum(subset(va_contributions,election_tp == 'G2012' | 
+                         election_tp == 'P2012')$contb_receipt_amt)
+
+gen_prim/sum(va_contributions$contb_receipt_amt) # greater than 1!?
+
+#exploring the data, I see that there are a lot of contributions AND 
+#some refunds. how many refunds are there
+
+```
+Looking at the data we see that there contributions that are negative,
+indicating the total designated as primary or general election
+contributions are greater than the amount given. Lets explore more...
+
+```{r echo=FALSE, refund_analysis}
+
+sum(va_contributions$contb_receipt_amt < 0) 
+#only 1853 of were recepits/refunds. 
+
+#by candidate:
+refund_dist <- va_contributions[va_contributions$contb_receipt_amt < 0, ] %>%
+  group_by(cand_nm)%>%
+  summarise(total_refund_redeg = sum(contb_receipt_amt), n_ref_rec = n())%>%
+  arrange(desc(total_refund_redeg))
+
+
+refund_dist
+
+#what was the total refunds?
+total_refunds <- sum(refund_dist$total_refund_redeg)
+
+total_refunds #-$870,234.3
+
+
+refund_examples <- subset(va_contributions, contb_receipt_amt < 0)
+
+types_of_refunds <- refund_examples %>%
+  group_by(receipt_desc)%>%
+  summarise(total_refunds = sum(contb_receipt_amt), number_of_refunds =n())%>%
+  arrange(desc(total_refunds))
+
+types_of_refunds$mean_refund <- types_of_refunds$total_refunds/
+  types_of_refunds$number_of_refunds
+
+types_of_refunds
+
+```
+So only $870,234 dollars were returned, and mostly to the two major candidates.
+The reasons are listed in the table above, but are mostly due to generic
+"refund"
+
+People got their money back ($395k), shifted it from primary to general
+election ($248.8k), or attributed it to their spouse ($100). Unnames reasons
+are in the 
+table below. 
+
+```{r echo=FALSE, unnamed_refunds}
+
+other_refunds <- subset(va_contributions, contb_receipt_amt < 0 &
+                          receipt_desc =="")
+ 
+
+other_reasons_refund <- other_refunds %>%
+  group_by(memo_text)%>%
+  summarise(total_refund = sum(contb_receipt_amt))%>%
+  arrange(desc(total_refund))
+
+other_reasons_refund
+
+```
+I think we are ready to move on to analyzing how the 52,000+ Virginians that
+contributed their money to the 2500 presidential election. 
+
+###How much did each candidate get
+```{r echo=FALSE, total_candidates}
+
+candidate_totals <- va_contributions%>%
+  group_by(cand_nm)%>%
+  summarise(fundraising_total = sum(contb_receipt_amt))%>%
+  arrange(desc(fundraising_total))
+
+candidate_totals$party <- sapply(candidate_totals$cand_nm,rep_dem_ind)
+
+candidate_totals
+
+ggplot(aes(x = reorder(cand_nm,fundraising_total), y = fundraising_total),
+       data = candidate_totals) +
+  geom_histogram(stat = "identity")+
+  coord_flip()+
+  scale_y_continuous(labels = dollar, breaks = seq(0,20000000,2500000),
+                     name = "Fundraising Totals")+xlab("Candidate")
+
+```
+Obama, Romney, Paul, Santorum, and are the largest contributors.
+No larges surprises.
+
+
+###Distribution of donations for each candidate
+```{r echo=FALSE, distribution_by_candidates}
+
+#Cleaning data up some more. 
+# a lot of people gave multiple times... but this is a data set for just 
+#the total amount given by each person (no dates for multiple gifts)
+#
+individual_total <- va_contributions %>%
+  group_by(contbr_nm, contbr_occupation, 
+           contbr_employer, cand_nm, election_tp, contbr_city, 
+           party, zip, county, primary_city)%>%
+  summarise(total_cont = sum(contb_receipt_amt))
+
+#distribution of total contributions by individuals
+ggplot(aes(x = (reorder(cand_nm, total_cont)), y = total_cont), 
+       data = individual_total) + 
+  geom_boxplot()+ coord_flip()
+
+
+```
+
+The negative contributions are back again! So there must be some
+folks who give negative money (e.g. gave and took it back)
+
+```{r echo=FALSE, strange_refunds}
+
+
+#oh that is peculiar. there are some people who gave but then took it back.
+#how much?
+
+
+sum(individual_total$total_cont < 0) #...792 people
+
+sum(individual_total[individual_total$total_cont < 0 , ]$total_cont) 
+#-$416,559.1
+```
+792 people only gave and then got their money back. So they had a 
+negative position. This amounted to $416,559.1. For ease of purpose,
+we can eleminate this folks.
+
+
+###Distribution of total persona gifts
+Lets look at the overal distributions and the consider how they differ
+by party, and then by candidates.
+```{r echo=FALSE, how_many_non_refund}
+
+#density of the individual contributions
+ggplot(aes(total_cont), data = individual_total)+
+  geom_density(bindwidth = 10, alpha = .7, fill = "Orange")+
+   scale_x_continuous(limits = c(0,2500), breaks = seq(0,2500,250),
+                      labels = dollar, name = "Contribution")+
+ ylab("Density of Amount Contributed")+
+  ggtitle("Density plot of individual Political Donations in Virginia")
+
+#density of the individual contributions by party
+ggplot(aes(x = total_cont, fill =party),
+         data = subset(individual_total, party != "Third Party"))+
+   geom_density(binwidth = 10, alpha=.2)+
+   scale_x_continuous(limits = c(0,2500), breaks = seq(0,2500,250),
+                      labels = dollar, name = "Contribution")+
+   scale_fill_manual(values = c(Democrat = "blue", Republican = "green"))+
+   ylab("Density of Amount Contributed")+
+ggtitle("Density plot of individual Political Donations in Virginia by Party")
+
+
+
+```
+We can see that Most contributions are under on thousand, but there are
+noticable bumps at certain amounts (1000,1500,2000,2500). It seems most folks
+give in logical intervals. Republicans have higher representation in peeks at
+$1000 and $2500.Democrats have a significant advantage 
+
+
+
+
+
+```{r echo=FALSE, candidate_distribution_analysis}
+
+summary(subset(individual_total, total_cont > 0 & 
+                 total_cont <= 2500)$total_cont)
+
+
+ggplot(aes(x = reorder(cand_nm, total_cont), y = total_cont), 
+       data = subset(individual_total , total_cont > 0)) + 
+  geom_boxplot()+ coord_flip()+
+  ylab("Distribution of Total gift amounts by Donors")
+
+#summary of the the distribution after discounting those negative only
+#contributors
+
+cand_summary <- with(subset(individual_total, total_cont > 0),
+                    by(total_cont, cand_nm, summary))
+
+cand_summary
+```
+The above summarizes the distribution for the candidates. 
+Unucccessful candidates had a higher proportion of large contributions, 
+which impacted their mean contribution. This makes sense, since the 
+contribution
+limit was $2,500 for 2012, and candidates with less contributions will be more
+impacted by the few large contributions.Some folks have total contributions of 
+$5,000 indicating they gave the max in both the primary and general election.
+
+If you compare the overalll Distribution, you'll notice that barack Obama has
+the lowest median contribution, among major candidates at 187. Romney had a
+median of 259 and his closest Republican competitor, Ron Paul, had a median gift
+of
+
+###What is the distribution of gifts?
+The question here is not the total distribution of gifts for candidates,
+but how much was given for EACH given donation
+```{r echo=FALSE, gift_distribution}
+summary(subset(individual_total , total_cont > 0)$total_cont)
+
+#reducing data but including the different dates 
+#(since some people gave multiple time) This allows to measure
+#gifts in primary (if people gave in both,)
+#this consolidates some receipts for days when multiple gifts where 
+#given, something I noticed
+
+reduced_data_dates <- va_contributions %>%
+  group_by(contbr_nm, contbr_occupation, 
+           contbr_employer, cand_nm, election_tp, contbr_city, 
+           contb_receipt_dt, party, zip, county, primary_city)%>%
+  summarise(total_cont = sum(contb_receipt_amt))
+
+#summary(reduced_data_dates$total_cont)
+
+#summary removing the returns
+summary(subset(reduced_data_dates , total_cont > 0)$total_cont)
+
+
+ggplot(aes(x = reorder(cand_nm, total_cont), y = total_cont), 
+       data = subset(reduced_data_dates , total_cont > 0)) + 
+  geom_boxplot()+ coord_flip() + ylab("Distribution of
+                                      each type of contribution")
+
+#cand_summary_daily <- with(subset(reduced_data_dates, total_cont > 0),
+#                    by(total_cont, cand_nm, summary))
+
+
+
+
+
+
+```
+
+The boxplot "scrunches"" a bit, indicating that a a lot of individual 
+contributors' total come from giving multiple times this is especially 
+true for Romney and Obama. Obama's boxplot shrunk significantly, indicating
+that people were giving him small gifts, but some were repeating. Romney's
+also shrunk, but the gifts were likely larger.
+removing the refunds makes boxplots more legible, and more indicative of the 
+distribution.
+
+#Geographic Analysis of personal contributions: ten largest counties
+There are 135 unique counties in virginia. How many cities should
+we consider determinant? First lets get a quick understanding of the
+distribution of total giving by city, the NUMBERS given by city, and
+finally, the distribution of giving by the largest contributing cities
+
+
+```{r echo=FALSE, county_analysis_one}
+
+total_county <- individual_total %>%
+  group_by(county)%>%
+  summarise(total_contributions = sum(total_cont), 
+            number_contributions = n())%>%
+  arrange(desc(total_contributions))
+
+total_county<- subset(total_county, county != "")
+
+total_county$state_share <- round(total_county$total_contributions/
+  sum(total_county$total_contributions), digits = 3)
+
+#checking share of state contributions for top 12
+sum(total_county[1:12,]$total_contributions)/
+  sum(total_county$total_contributions)
+
+#12 largest
+overall_largest_dozen <- total_county[1:12,]$county
+
+head(total_county,12)
+
+ggplot(aes(x = reorder(county,total_contributions), y = total_contributions), 
+       data = total_county)+
+  geom_histogram(stat='identity', colour = "darkgreen", 
+                 fill = "white")+
+  theme(axis.text.x=element_blank())+scale_x_discrete(name = "")+
+  scale_y_continuous(labels = dollar, name = "City Contribution")+
+  ggtitle("Distribution of County Giving in Virginia")
+
+
+total_county_party <- individual_total %>%
+  group_by(county, party)%>%
+  summarise(total_contributions = sum(total_cont), 
+            number_contributions = n())%>%
+  arrange(county, party, desc(total_contributions))
+
+
+ggplot(aes(x = reorder(county, total_contributions), 
+           y = total_contributions), 
+       data = total_county[total_county$county %in% 
+       overall_largest_dozen, ]) + 
+  geom_histogram(stat = 'identity')+ 
+  coord_flip()+
+  scale_y_continuous(labels = dollar, 
+                     name = "Total Contributions for Counties")+
+  xlab("Twelve Biggest Counties")
+
+```
+
+
+###A Visual Map of Giving By Virginia
+I made a Chloropleth map of Virginia to demonstrate the concentration
+of Giving. As expected, the majority of political donations come from areas
+that border Washington, D.C. (the northeast corner is Fairfax, Arlington, 
+Alexandria, and Loudon) These areas are the most affluent, and have a lot of
+people working politics, for the government, government contractors, or 
+private sector that does work related to the federal government.
+
+```{r, echo=FALSE, chlor_of_virginia}
+
+#making Chloropleth Map of Virginia
+#https://github.com/trulia/choroplethr
+
+#I need to take out the "City" and "County" in order for the
+#to match the counties for the Chloropleth
+remove_ct <- function(x){
+  if(grepl("City", x)){
+    return(strtrim(as.character(x),nchar(as.character(x))-5))
+  }else if(grepl("County", x)){
+    return(strtrim(as.character(x),nchar(as.character(x))-7))
+  }
+}
+
+
+#for some reason...James City and Charles City don't quite
+#come out right (extra letters), I wrote a nother function to manually truncate
+
+fix_jc <- function(x){
+  if(grepl("James City",x)){
+    return("James City")
+  }else if(grepl("Charles City",x)){
+    return("Charles City")
+  }else{
+    return(x)
+  }
+}
+
+
+total_county <- total_county[,1:4]
+
+total_county$county_short <- sapply(total_county$county, remove_ct)
+total_county$county_fix <- sapply(total_county$county_short, fix_jc)
+
+#total_county$county_short[26] <- "James City"
+#total_county$county_short[115] <- "Charles City"
+
+
+for(i in 1:length(total_county$county_fix)){
+ total_county$region[i] <- 
+   virginia_chlor[match(tolower(total_county$county_fix[i]),
+                                              virginia_chlor$county.name),
+                                        ]$region
+}
+
+
+
+
+total_county_final <- total_county[,2:7]
+
+total_by_pifs <- total_county_final %>%
+  group_by(region)%>%
+  summarise(total_value = sum(total_contributions))
+
+total_by_pifs$value <-total_by_pifs$total_value
+
+
+county_choropleth(total_by_pifs,
+                 title  = "2012 Chloropleth of Giving By Virginia Counties",
+                 legend      = "Dollar Value",
+                 num_colors  = 5,
+                 state_zoom = "virginia")
+
+#Building the Mean Gift by County chloroplath
+
+
+
+total_county_mean <- total_county
+
+total_county_mean$mean <- total_county_mean$total_contributions/
+  total_county_mean$number_contributions
+total_county_mean$value <- total_county_mean$mean
+
+tcm_pifs <- total_county_mean %>%
+  group_by(region)%>%
+  summarise(mean_value = mean(mean))
+  
+
+tcm_pifs$value <- tcm_pifs$mean_value
+
+county_choropleth(tcm_pifs,
+                 title       = "Mean Political Donation by County",
+                 legend      = "Dollar Value",
+                 num_colors  = 5,
+                 state_zoom = "virginia")
+
+
+```
+
+
+There are onle few counties from the top 12, which we identified as the vast,
+majority of political donations, that have the highest range of average
+donations (452-667): Albermale (middle dark blue) and Prince George 
+(bottom right darkbblue). The beltway V in terms of total contributions isn't
+as pronounced, but its still there noticable.
+
+From the looks it seems we don't need to consider many counties outside the top
+ten or so. It is a very long tailed data. Fairfax is by fair the largest county
+in the aggregate. Only 12 counties have one percent or more and make up 
+eighty percent of giving.
+
+
+
+###Density plot of giving in Dozen largest Counties
+e.g. how do counties give?
+```{r echo=FALSE, party_density}
+
+total_county_party_ind_giving_dis <- individual_total %>%
+  group_by(contbr_nm, party, county)%>%
+  summarise(contributions = sum(total_cont))
+  
+ 
+
+ggplot(aes(x = contributions, fill = party), 
+       data = subset(total_county_party_ind_giving_dis, contributions >= 0 &
+                       contributions <= 2500 &
+        party != "Third Party" & county %in% overall_largest_dozen))+
+  geom_density(alpha = .4)+facet_wrap(~county)+
+  scale_fill_manual(values = c(Democrat = "blue", Republican = "green"))+
+  scale_x_continuous(labels = dollar, breaks = c(0,1250, 2500), 
+                     name ="Contribution Amount")+
+  ylab("Density")+ggtitle("Density Distribution for Largest Dozen Cities")+
+  theme(legend.position="bottom")
+  
+
+
+```
+
+
+
+
+###Distribution of total personal gifts in largest 12 counties
+```{r echo=FALSE, county_giving_two}
+
+ggplot(aes(x = reorder(county, total_cont), y = total_cont), 
+       data = individual_total[individual_total$county %in% 
+       overall_largest_dozen & 
+         individual_total$total_cont >0 ,]) + geom_boxplot()+
+  coord_flip()+scale_y_continuous(limits = c(0,2500), labels = dollar, 
+  name = "Distribution of Contributions for Counties")+
+  xlab("Twelve Biggest Counties")
+
+#density plot of contributions 
+
+
+
+```
+
+If we facet Wrap through the 12 largest towns, we can see that the
+distribution show a consistent pattern: republicans give a more in
+the higher areas, while democrats get a higher portion smaller contributions.
+The We can see in Fairfax, Arlington, and Alexandria City that there is a clear
+green area over the $1000 mark, as well as in the $2,500 mark. This confirms
+conventional wisdom.
+
+We saw that the largest contributing Counties (Fairfax, Arlington, Alexandria),
+are also give the highest mean donation per person, but we now observe the
+distributions in terms of the individual size of gifts. Chesterfield stands out
+because both republicans and democrats overlap significantly in the size 
+of their donations. 
+
+The 100, 1000, 2500 peaks are commoon, but we see that Richmond, Norfolk have
+less pronounced peaks at $1000.Fauquier was the only county of the top twelve
+were the distribution for democrats giving around $1000 was higher than it
+was for Republicans. Nonehtelesss, there are only slight deviations from the 
+general trend that we saw in the desnity plot of the whole state.
+
+###Time series of donations Money v. Time by candidate
+```{r echo=FALSE, running_total_all}
+#But, how much did candidates receive each day? What does the running total of
+#contributions suggest?
+#In order to do this I consolidate contributions to candidate by day:
+
+rep_primary_total_date <- reduced_data_dates %>%
+  group_by(cand_nm, contb_receipt_dt)%>%
+  summarise(daily_total = sum(total_cont), cont_nums = n())%>%
+  arrange(cand_nm, contb_receipt_dt)
+
+
+#View(rep_primary_total_date)
+
+
+#Then I write a for loop to get the running total that was raised by 
+#the day in order to continuously sum
+
+for(i in 1:length(rep_primary_total_date$cand_nm)){
+  if(i == 1){
+  rep_primary_total_date$running_total[i] <- 
+    rep_primary_total_date$daily_total[i]
+  
+  rep_primary_total_date$running_num[i] <- 
+    rep_primary_total_date$cont_nums[i]
+  
+  }else if(rep_primary_total_date$cand_nm[i] == 
+             rep_primary_total_date$cand_nm[i-1]){
+    rep_primary_total_date$running_total[i] <- 
+      rep_primary_total_date$running_total[i-1] + 
+      rep_primary_total_date$daily_total[i]
+    
+    rep_primary_total_date$running_num[i] <- 
+      rep_primary_total_date$running_num[i-1] + 
+      rep_primary_total_date$cont_nums[i]
+    
+  }else if(rep_primary_total_date$cand_nm[i] != 
+             rep_primary_total_date$cand_nm[i-1] & i > 1){
+    rep_primary_total_date$running_total[i] <- 
+      rep_primary_total_date$daily_total[i]
+    
+    rep_primary_total_date$running_num[i] <- 
+      rep_primary_total_date$cont_nums[i]
+  }
+}
+  
+#check but checking last date of contribution for a candidate
+#with the results for tapply...checks out! 
+tapply(rep_primary_total_date$daily_total,rep_primary_total_date$cand_nm, sum)
+
+#plot of the running totals
+
+ggplot(aes(x = contb_receipt_dt, y = running_total, color = cand_nm), 
+       data = rep_primary_total_date) + geom_line()+
+  scale_x_date(breaks = date_breaks("6 month"), name ="", 
+               limit =as.Date(c("2011-06-01","2012-11-05"))) + 
+  scale_y_continuous(labels = dollar, name = "Total Given")+
+                     ggtitle("Total Donated vs. Time by Candidate")
+
+#plot of the number of discrete contributions through
+
+ggplot(aes(x = contb_receipt_dt, y = running_num, color = cand_nm), 
+       data = rep_primary_total_date) +geom_line()+
+  scale_x_date(breaks = date_breaks("6 month"), name ="", 
+               limit =as.Date(c("2011-06-01","2012-11-05")))+
+         ggtitle("Total Number of Donations vs. Time by Candidate")+
+  scale_y_continuous(name = "Number of Donations", labels = comma)
+
+
+```
+
+This is the time series for contribtuions to  all candidates. Obama
+ended up with the overall advantgae, but Romney Came very close in August.
+In September Obama starded to regain the lead.
+
+We can see that in August the number of total gifts given to Obama began to
+increase as well. while Romney began to flatten out. As we saw earlier, gifts
+to Romney's campaign were larger so things were pretty close in the aggregate
+
+###Giving Patterns by Time
+The motivation for the following three graphs is to see the running total
+for the amount given to Republican candidates vs. Democrats, and to see
+the number discreet contributions.
+
+```{r echo=FALSE, time_series_donations}
+
+rep_party_total_date <- reduced_data_dates %>%
+  group_by(party, contb_receipt_dt)%>%
+  summarise(daily_total = sum(total_cont), daily_n_total =n())%>%
+  arrange(party, contb_receipt_dt)
+
+#created running totals for party, as I did above.
+#probably a more elegant solution but I had already witten the
+#loop so I recycled
+
+for(i in 1:length(rep_party_total_date$party)){
+  if(i == 1){
+  rep_party_total_date$running_total[i] <- 
+    rep_party_total_date$daily_total[i]
+  
+  rep_party_total_date$running_donations[i] <- 
+    rep_party_total_date$daily_n_total[i]
+
+  }else if(rep_party_total_date$party[i] == 
+             rep_party_total_date$party[i-1]){
+    
+    rep_party_total_date$running_total[i] <- 
+      rep_party_total_date$running_total[i-1] + 
+      rep_party_total_date$daily_total[i]
+    
+    rep_party_total_date$running_donations[i] <- 
+      rep_party_total_date$running_donations[i-1] + 
+      rep_party_total_date$daily_n_total[i]
+
+  }else if(rep_party_total_date$party[i] != 
+             rep_party_total_date$party[i-1] & i > 1){
+    
+    rep_party_total_date$running_total[i] <- 
+      rep_party_total_date$daily_total[i]
+
+    rep_party_total_date$running_donations[i] <- 
+      rep_party_total_date$daily_n_total[i]
+  }
+}
+
+rep_party_total_date$giving_rate <- rep_party_total_date$running_total/
+  rep_party_total_date$running_donations
+
+#Plot of running total Republican vs.Democrats
+
+ggplot(aes(x = contb_receipt_dt, y = running_total, color = party), 
+       data = subset(rep_party_total_date, party != "Third Party")) + 
+  geom_line()+
+  scale_x_date(breaks = date_breaks("6 month"), name ="") + 
+  scale_y_continuous(labels = dollar)+
+  scale_color_manual(values = c(Democrat = "blue", Republican = "Red"))+
+  ggtitle("Total Contributions vs. Time")+
+                        theme(legend.position="bottom")
+
+#Plot of number of donations for Republicans and democrats
+
+ggplot(aes(x = contb_receipt_dt, y = running_donations, color = party), 
+       data = subset(rep_party_total_date, party != "Third Party")) + 
+  geom_line()+
+  scale_x_date(breaks = date_breaks("6 month"), name ="") + 
+  scale_color_manual(values = c(Democrat = "blue", Republican = "Red"))+
+  ggtitle("Number of Contributions by Date")+
+  scale_y_continuous(name = "Total Number of contributions vs. Time by Party", 
+                    labels = comma)
+                        theme(legend.position="bottom")
+
+
+ggplot(aes(x = contb_receipt_dt, y = giving_rate, color = party), 
+       data = subset(rep_party_total_date, party != "Third Party")) + 
+  geom_line()+
+  scale_x_date(breaks = date_breaks("6 month"), name ="") + 
+  scale_y_continuous(labels = dollar, name ="Mean daily Donation", 
+                     breaks = seq(0,2500,250))+
+  scale_color_manual(values = c(Democrat = "blue", Republican = "Red"))+
+  ggtitle("Mean donation Size vs. Time")+
+                        theme(legend.position="bottom")
+
+```
+
+###Key Observations:
+Republicans dnations were higher, partialyl due to the 
+primary, but also because of large momentum between January 1 and April 1.
+After that, things seem to slow down, and in mid-summer (July onward),
+Obama began to close the fundraising gap. this was mostly done by the number
+of contributions, which we see in the 'Total Number of Contributions vs. Time'
+graph. An interesting point, however, is that the average size of donations
+seems to have a slightly negative correlation with time. So democrats were
+giving more often, but we steadily giving much much less than Republicans.
+
+I want to see if these relationships, and other, are for different professions.
+
+###A side note:
+As we saw, Romney had the state's nomination pretty locked up by the beginning 
+of 2012 receipts were coming faster and by January 1, 2012, and largest 
+personal gifts were almost all going to Romney and the incumbent. I bring this 
+up because by due to virginia voting laws, a candidade needs to obtain 10,000 
+signatures to  be on the ballet. Only Ron Paul and Romney were eligible for 
+the ballot on February ____. The table below shows that large donors, of which
+we have seen Republicans largely rely on, were already decided for Romney. 
+Of the 667 donations of $2,500 (the limit), Romney received 72 percent in 2011.
+
+```{r echo=FALSE, on_primaries}
+big_rep_donations <- subset(va_contributions,contb_receipt_amt == 2500 
+                     & party == "Republican" & 
+                       contb_receipt_dt < "2012-01-01")
+
+n_big_donations  <- big_rep_donations %>%
+  group_by(cand_nm)%>%
+  summarise(total_max = n())%>%
+  arrange(desc(total_max))
+
+sum(n_big_donations$total_max)
+
+n_big_donations$percent_total <- n_big_donations$total_max/
+  sum(n_big_donations$total_max)
+
+n_big_donations
+#yike! Romney had nearly 72% of the contributions of the personal limit by 
+#The end of 2011. So Virginia's personal giving data follow a path that was
+#already widely understood from media coverage
+#nothing to see here...
+#Did any subset of the population contribute differently?
+
+
+#some Obama giving was considered "Primary, 
+
+#overall goal is to explore the giving rates by profession to different 
+#candidates, both in totality, 
+#and by different stages of the race
+#explore the giving rates in time for each candidate...
+#the scale of contributions given to candidates
+
+#other things to explore
+
+#distribution of giving amounts by profession (military, lawyers, retirees,
+#students, education, etc.)
+
+#I want to compare the giving rates for different types of occuptations, namely
+#the Legal Profession, Workers in Education, and Military. From political
+#intution I generally
+#
+
+
+```
+
+
+
+
+```{r echo = FALSE, loops}
+#the function: takes a vector of strings of any length (x), 
+#and a data frame called z. 'x' will be the key word/words that will filter 
+#the data(teachers, professors, etc.). I am using the GREP function to pick 
+#up partial words. For example, RETIREE, RETIRED, RETIRE would all picked up 
+#if RETIRE is used. 
+#All occupations that have the word
+#LAWYER will be included (corporate lawyer, family lawyer, etc.)
+
+filter_function <- function(x,z){
+  #loop through the length of the vector x
+  indices <- c()
+  for(i in 1:length(x)){
+    indices <- append(indices, grep(x[i], z$contbr_occupation))
+  }
+  
+  finalindex <- unique(indices)
+  #this is the newly filtered frame!
+  final_frame <- z[c(finalindex), ]
+  return(final_frame)
+}
+
+#Armed Forces Key Words
+military_giving <- filter_function(c("MILITARY","BRIGADIER", "GENERAL",
+                                     "ARMY", "AIR FORCE", "COLONEL",
+                                     "STAFF SEARGANT", "ENLISTED",
+                                     "MARINES","CORPS OF", "LT COL",
+                                     "COAST GUARD", "NAVY"), 
+                                   va_contributions)
+
+#Education key words
+medical_giving <- filter_function(c("MEDICAL DOCTOR",
+                                    "DOCTOR", "PHYSICIAN", 
+                                    "MD", "M.D.", "NURSE",
+                                      "SURGEON", "PHYSICIANS ASSISTANT",
+                                    "REGISTERED NURSE", "ANASTH",
+                                    "DERMATOL", "ONCOLOG","PODIATR",
+                                    "OPTICIAN",
+                                    "HOSPITAL ADMINISTRATOR",
+                                      "PEDIATRICIAN", 
+                                    "FAMILY DOCTOR"), va_contributions)
+
+
+education_giving <- filter_function(c("TEACHER", "BAND DIRECTOR",
+                                      "STUDENT", "BASEBALL COACH",
+                                      "PROFESSOR", "DAYCARE",
+                                      "GUIDANCE COUNSELOR", "H.S. PRINCIPAL",
+                                      "HS PRINCIPAL", "GRAMMAR SCHOOL",
+                                      "PRE-SCHOOL", "PRESCHOOL",
+                                      "HIGH SCHOOL", "ELEMENTARY SCHOOL",
+                                      "ATHLETIC DIRECTOR", "FOOTBALL COACH",
+                                      "BASKETBALL COACH", "SCHOOL NURSE"),
+                                    va_contributions)
+#Legal Professeion key words
+legal_giving <- filter_function(c("LAWYER", "ATTORNEY", "ESQUIRE", 
+                                  "ESQ.", "JUDGE","JD","J.D"), 
+                                va_contributions)
+
+#put all contributors into a list of data sets
+
+df_list <- list(military_giving, medical_giving, 
+                education_giving, legal_giving)
+
+#names for the type of giving...to be used in
+desig_vector <- c("Armed Services Giving", "Medical Professional Giving", 
+                  "Education Professional Giving", "Legal Professional Giving")
+
+
+#names for the professionsals to be referenced by a loop
+professions_vector <- c("Armed Forces", 
+                        "Medical", "Education",
+                        "Legal")
+
+#abreviations for the types of professionals
+abriv_vector <- c("AS", "MD", "ED", "LL")
+
+
+ptm <- proc.time()
+
+#note this loop takes about ten minutes - 11 minutes on my slow computer
+for(i in 1:length(df_list)){
+
+dataset <- df_list[[i]]
+
+
+#what the output plots will contain
+designation <- desig_vector[i]
+professions <- professions_vector[i]
+shortcut <- abriv_vector[i]
+
+#asssign the designation and shortcut variable from the vectors 
+#(which we are looping through)
+
+#reducing the data by summing up how much each person gave, in total
+reduced_data <- dataset %>%
+  group_by(contbr_nm, contbr_occupation, 
+           contbr_employer, cand_nm, election_tp, 
+           contbr_city, party, contb_receipt_dt, zip, county, primary_city)%>%
+  summarise(total_cont = sum(contb_receipt_amt))
+
+
+#need to consolidate alll of the giving per individuals
+dens_party_giving <- reduced_data[reduced_data$party != "Third Party",] %>%
+  group_by(contbr_nm, party)%>%
+  summarise(contributions = sum(total_cont))
+
+#Visualization of Republican vs. Democratic Giving
+
+part_giving <- reduced_data %>%
+  group_by(party, contb_receipt_dt)%>%
+  summarise(daily_party_giving = sum(total_cont))%>%
+  arrange(party, contb_receipt_dt)
+
+
+
+#loop to create a running total by date
+
+for(i in 1:length(part_giving$party)){
+  if(i == 1){
+    part_giving$running_total[i] <- part_giving$daily_party_giving[i]
+  }else if(part_giving$party[i-1] == part_giving$party[i]){
+    part_giving$running_total[i] <- part_giving$daily_party_giving[i] + 
+      part_giving$running_total[i-1]
+  }else if(i > 1 & part_giving$party[i-1] != part_giving$party[i]){
+    part_giving$running_total[i] <- part_giving$daily_party_giving[i]
+  }
+}
+
+
+temp_graph <- ggplot(aes(x = contb_receipt_dt, 
+                         y = running_total, color = party), 
+                     data = subset(part_giving, party != "Third Party"))+ 
+  geom_line(line_type = 1, size = 1)+
+  scale_x_date(breaks = date_breaks("6 month"), name = "",
+                labels = date_format("%m/%d/%y")) + 
+  scale_y_continuous(labels = dollar, 
+        name = designation)+
+  scale_colour_manual(values =c("Blue","Red"))+ 
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank())+ggtitle(professions)
+
+
+
+assign(paste(shortcut,"R",sep=""),temp_graph)
+
+#possibly mess with bin width to make nicer, and assign colors manually, 
+#change bins
+
+
+#this is the box plots for reps. vs. dems 
+
+temp_party_boxplot <- ggplot(aes(x = party, y = contributions,fill = party), 
+       data =  dens_party_giving[dens_party_giving$party != 
+               "Third Party" & 
+                 dens_party_giving$contributions <= 2500,])+ 
+  geom_boxplot()+
+  scale_y_continuous(labels = dollar)+ggtitle(professions)+
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank())
+
+
+assign(paste(shortcut,"b",sep=""), temp_party_boxplot)
+
+temp_summary <- summary(dens_party_giving$contributions)
+
+assign(paste(shortcut,"sum",sep = ""),temp_summary)
+
+total_given <- sum(dens_party_giving$contributions)
+
+assign(paste(shortcut,"total",sep=""),total_given)
+#this is the density plot of total given
+
+number_contributors <- length(dens_party_giving$contributions)
+assign(paste(shortcut,"conts",sep=""),number_contributors)
+
+
+temp_giving_density <- ggplot(aes(x=contributions),
+                   data = subset(dens_party_giving, contributions <= 2500))+
+  geom_density(alpha = .4, fill = "orange")+
+  scale_x_continuous(name= paste("Distribution of Giving by ", 
+                                 professions,sep=""), 
+      labels = dollar, breaks = c(0,1250,2500))+
+  scale_fill_manual(values = c(Democrat = "blue", Republican = "red"))+
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank())+ggtitle(designation)
+
+assign(paste(shortcut,"dt",sep=""), temp_giving_density)
+
+
+#this is the density plot of total given based on party
+
+
+temp_party_giving_density <- ggplot(aes(x= contributions, fill = party), 
+                    data = subset(dens_party_giving,contributions <= 2500))+
+  geom_density(alpha = .4)+
+  scale_x_continuous(name= paste("Distribution of Party Giving by ", 
+                                 professions,sep=""), 
+      labels = dollar, breaks = c(0,1250,2500))+
+  scale_fill_manual(values = c(Democrat = "blue", Republican = "red"))+
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank())+ggtitle(professions)
+
+assign(paste(shortcut,"dp",sep=""), temp_party_giving_density)
+
+
+}
+
+
+
+#now arrange everything...
+
+
+#some key comparisons....doctors turned, military stayed republican but narrowed, 
+#education increased gap, lawyers made a switch toward the end (are they front runners?)
+
+
+```
+
+##Analysis of Giving by Professions
+I built a function to search for key words that fit in certain proffessions
+and then filtered and buil a series of plots.
+
+for each group I present:
+summary distribution
+
+total given
+
+number of contributors
+
+###Armed Services
+```{r echo = FALSE, summary_AS}
+
+ASsum
+
+AStotal
+
+ASconts
+```
+
+
+###Medical Professionals
+```{r echo = FALSE, summary_MD}
+MDsum
+
+MDtotal
+
+MDconts
+```
+
+
+###Educators
+```{r echo = FALSE, summary_ED}
+EDsum
+
+EDtotal
+
+EDconts
+```
+
+
+###Legal Professionals
+```{r echo = FALSE, summary_LL}
+LLsum
+
+LLtotal
+
+LLconts
+```
+###Running total
+
+This is a graph of the time series for the four professions
+
+```{r echo=FALSE, grid_arrange_prof_running}
+
+legendr <- gtable_filter(ggplot_gtable(ggplot_build(ASR + 
+                         theme(legend.position="bottom"))), "guide-box") 
+
+running_grid <- arrangeGrob(ASR + theme(legend.position="none"), 
+                         MDR + theme(legend.position="none"), 
+                         EDR + theme(legend.position="none"), 
+                         LLR + theme(legend.position="none"),
+                         main = textGrob("Total Donations by Date", 
+                                         vjust = 1),
+                         left = 
+         textGrob("Total Given", rot = 90,gp=gpar(fontsize=12),
+                  vjust = 1),
+                         ncol =2)
+theightr <- unit(12, "points")
+
+lheightr <- sum(legendr$height)
+running_grid <- arrangeGrob(running_grid, 
+                            textGrob("Dates", gp=gpar(fontsize=12)), 
+                            heights=unit.c(unit(1, "npc") - theightr, 
+                                           theightr))
+running_grid <- arrangeGrob(running_grid, legendr, 
+                            heights=unit.c(unit(1, "npc") - lheightr, 
+                                                    lheightr), ncol=1)
+
+running_grid
+```
+
+
+
+###Depiction of Giving Distribution by Professions
+
+```{r echo = FALSE, grid_arrange_box_plot}
+
+legendb <- gtable_filter(ggplot_gtable(ggplot_build(ASb)), "guide-box") 
+
+
+
+#This is the comparison for the Professions
+grid.arrange(arrangeGrob(ASb + theme(legend.position="none"), 
+                         MDb + theme(legend.position="none"), 
+                         EDb + theme(legend.position="none"), 
+                         LLb + theme(legend.position="none"), 
+                         ncol =2,
+                         main = textGrob("Distribtion of Giving by Profession", vjust = 1),
+                         left = 
+         textGrob("Distribution of Contributions", 
+                  rot = 90, vjust = 1)),
+             legendb,
+             widths=unit.c(unit(1, "npc") - legendb$width, legendb$width),                  
+    nrow=1)
+
+
+```
+
+
+The side by side comparison is that different except for legal professionals.
+Republican lawyers, judges, etc. give a LOT more than the general population.
+The other professions medical is higher, but not that much more.
+
+
+###Density distribution of political donations by professions and party
+```{r echo = FALSE, grid_arrange_density}
+
+legendd <- gtable_filter(ggplot_gtable(ggplot_build(ASdp)), "guide-box") 
+
+
+
+#This is the comparison for the Professions
+grid.arrange(arrangeGrob(ASdp + theme(legend.position="none"), 
+                         MDdp + theme(legend.position="none"), 
+                         EDdp + theme(legend.position="none"), 
+                         LLdp + theme(legend.position="none"), 
+                         ncol =2,
+                         main = textGrob("Distribtion of Giving by Profession", vjust = 1),
+                         left = 
+         textGrob("Distribution of Contributions", 
+                  rot = 90, vjust = 1)),
+             legendd,
+             widths=unit.c(unit(1, "npc") - legendd$width, legendd$width),                  
+    nrow=1)
+
+
+```
+
+# Final Plots and Summary
+
+### Plot One
+```{r echo=FALSE, Plot_One}
+
+ggplot(aes(x = contributions, fill = party), 
+       data = subset(total_county_party_ind_giving_dis, contributions >= 0 &
+                       contributions <= 2500 &
+        party != "Third Party" & county %in% overall_largest_dozen))+
+  geom_density(alpha = .4)+facet_wrap(~county)+
+  scale_fill_manual(values = c(Democrat = "blue", Republican = "green"))+
+  scale_x_continuous(labels = dollar, breaks = c(0,1250, 2500), 
+                     name ="Contribution Amount")+
+  ylab("Density")+ggtitle("Density Distribution for Largest Dozen Cities")+
+  theme(legend.position="bottom")
+
+
+
+```
+
+### Description One
+This is a plot that demonstrates the total distribtion densities of giving 
+amounts in the largest counties of total giving by professions. The common 
+thread, was that Democratic donors give smaller amounts, and Republican 
+donors give larger amounts advantage. 
+
+With the onset of PACs, where affluent individuals can disproprtionately 
+impact races, this is a much smaller consideration.
+
+It was nonetheless, a very close race (51.16 vs. 47.28)
+
+### Plot Two
+```{r echo=FALSE, Plot_Two}
+
+running_grid
+
+```
+
+### Description Two
+
+
+This is a plot of the four major professions and their giving totals for both parties 
+based on time. Wesome interesting changes in the personal contributions. 
+There seemed to be a crucial point when democratic giving took over for members of 
+the legal profession. 
+
+Armed forces professionals were were giving more to Republicans
+until the end, but then there was a reveral.
+
+It was interesting to see medical professional be relatively close in February 2012,
+but then start to contribut much more to democrats.
+
+For Lawyers, it was the opposite, they began to contribute to Obama starting in 
+July,and eventually democratic contributions overtook Republican ones. Their 
+support was probably crucial.
+
+### Plot Three: Box plot of the four professions
+```{r echo=FALSE, Plot_Three}
+
+grid.arrange(arrangeGrob(ASb + theme(legend.position="none"), 
+                         MDb + theme(legend.position="none"), 
+                         EDb + theme(legend.position="none"), 
+                         LLb + theme(legend.position="none"), 
+                         ncol =2,
+                         main = textGrob("Distribtion of Giving by Profession", vjust = 1),
+                         left = 
+         textGrob("Distribution of Contributions", 
+                  rot = 90, vjust = 1)),
+             legendb,
+             widths=unit.c(unit(1, "npc") - legendb$width, legendb$width),                  
+    nrow=1)
+
+
+```
+
+
+### Description Three
+This is an important distribution because it shows that lawyers, on average contribute
+much more than other professsions, even for democrats. Interestingly
+
+Interestingly, educator and armed forces officials have similar distributions
+in their giving patterns. This could be because both professions have a lower
+ceiling and there i not as much variability in the salary. They did deviate
+from the overall distributions in that their distribution of donations was nearly
+identical for both parties.
+
+The edical professional distributionalso, tracked fairly
+------
+
+# Reflection
+
+This was a tough data set to work with. There is a lot of room for error in
+data collection. I didn't have more time to go through more and ensure that
+there were more dupliates. I think that I will write some sort of function (
+or find a package) to use percentage completion of the name with other
+variables to furhter join the data. 
+
+Unfortunately, the data reinforced a lot of conventional wisdom about political
+giving. Part of that is that I choose a fairl simple set of statistical tools,
+but another is that rules of thumb exist for a reason: they are grounded in
+some truth. I think that the running total could be beneficial for measuring
+
+Large single-donors tend to favor republic candidates. The military tends to favor
+Republicans. Teachers favor democrats. We did, however, see different infection
+points. People in the medical profession began to support Obama earlier than 
+lawyers. This data could help campaign managers to evaluate messaging. 
+For example, why did  doctors to start supporting Obama heavily? Why did 
+professionals in the legal field take until nearly the end of the race 
+to begin to supportthe encombant. The data could help to reflect on how 
+demographics responde to campaign messages.
+
+Finally, I'm not certain about the lag in reporting the receipt dates. It seems
+to me like they could possibly be delayed, especially because some were
+recorded AFTer the election. The lag in processing could impact the reliability
+of the time series plots.
+
+I made an effort to create a general solution where I could package in another
+state and perform analasys as quickly. I think that is possible, and I used the
+"assign" function in the beginning of doing just that, but there I was losing
+track of the ultimate goal.
+
+The loop filter function was an idea that I used early and kind of grandfathere,
+in retrospect, it would have been better to try and made a generalized professions
+and then I could have done much better data wrangling. The variety of professions,
+was quite overwhelming so I decided to use the filter, even though there is
+likely overlap. Some military people are probabyl listed as "professor at west 
+point". Some doctors may be "Medical school professors". I still felt it was worht it
+to try, ad a quick glance at the data generally supports the task.
+
+Finally,I think the chloropleth could have been better used. I used the
+Chloroplethr package, but it has limitations that I couldn't overcome,
+namely creating state objects in order to modify with ggplot commands, 
+as per the documentation. Because I couldn't use ggplot commands, I was stuck
+with blue, and I felt that additional use of the chloropleth would just
+lead to conclusion.
+
+In conclusion, I learned a lot, and really pushed myself, not at least because
+I waited for literally the last day. I think
+
+
